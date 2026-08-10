@@ -8,7 +8,7 @@ LangGraph 编排 — 声明节点、边、条件 router、fan-out
 
 节点链：
 fetch -> extract_basic -> identify_actors -> fan-out(逐actor: extract_details(IOC))
-      -> aggregate -> export -> END
+      -> ioc_filter -> aggregate -> export -> END
 
 条件分支：
 - fetch 失败/空正文 -> 直奔 export
@@ -31,6 +31,7 @@ from .nodes.aggregate import aggregate_node
 from .nodes.basic import extract_basic_node
 from .nodes.extract_details import extract_details_node
 from .nodes.fetch import fetch_node
+from .nodes.ioc_filter import ioc_filter_node
 from .state import ExtractionState
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,7 @@ def build_graph(
     builder.add_node("identify_actors", identify_actors_node)
     builder.add_node("fan_out_dispatcher", fan_out_dispatcher)
     builder.add_node("extract_details", extract_details_node)
+    builder.add_node("ioc_filter", ioc_filter_node)
     builder.add_node("aggregate", aggregate_node)
     builder.add_node("export", export_node)
 
@@ -193,8 +195,9 @@ def build_graph(
     # fan_out_dispatcher -> fan-out extract_details（并行）
     builder.add_conditional_edges("fan_out_dispatcher", fan_out_actor_details)
 
-    # extract_details -> aggregate（barrier: 所有 fan-out 完成才进入）
-    builder.add_edge("extract_details", "aggregate")
+    # extract_details -> ioc_filter -> aggregate（barrier: 所有 fan-out 完成 → IOC 过滤 → 聚合）
+    builder.add_edge("extract_details", "ioc_filter")
+    builder.add_edge("ioc_filter", "aggregate")
 
     # aggregate -> export
     builder.add_edge("aggregate", "export")
