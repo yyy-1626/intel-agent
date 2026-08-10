@@ -122,6 +122,10 @@ class IOC(BaseModel):
         description="该 IOC 在报告中的上下文说明",
         default=None,
     )
+    intel_source: Optional[dict] = Field(
+        description="威胁情报平台查询结果摘要，如 {'vt_detections': 5, 'otx_pulses': 2}",
+        default=None,
+    )
 
 
 class Tool(BaseModel):

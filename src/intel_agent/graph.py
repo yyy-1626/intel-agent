@@ -32,6 +32,7 @@ from .nodes.basic import extract_basic_node
 from .nodes.extract_details import extract_details_node
 from .nodes.fetch import fetch_node
 from .state import ExtractionState
+from .nodes.enrich_ioc import enrich_ioc_node
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,7 @@ def build_graph(
     builder.add_node("extract_details", extract_details_node)
     builder.add_node("aggregate", aggregate_node)
     builder.add_node("export", export_node)
+    builder.add_node("enrich_ioc", enrich_ioc_node)
 
     # ---- 声明边 ----
     builder.set_entry_point("fetch")
@@ -194,7 +196,8 @@ def build_graph(
     builder.add_conditional_edges("fan_out_dispatcher", fan_out_actor_details)
 
     # extract_details -> aggregate（barrier: 所有 fan-out 完成才进入）
-    builder.add_edge("extract_details", "aggregate")
+    builder.add_edge("extract_details", "enrich_ioc")
+    builder.add_edge("enrich_ioc", "aggregate")
 
     # aggregate -> export
     builder.add_edge("aggregate", "export")

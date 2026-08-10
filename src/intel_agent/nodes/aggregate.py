@@ -46,6 +46,7 @@ def aggregate_node(state: dict) -> dict:
                 threat_level=ioc_dict.get("threat_level", "未知"),
                 tags=ioc_dict.get("tags", []),
                 context=ioc_dict.get("context"),
+                intel_source=ioc_dict.get("intel_source"),
             ))
 
         # 转换工具（来自 identify_actors LLM 抽取）
