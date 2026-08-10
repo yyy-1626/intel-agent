@@ -1,10 +1,11 @@
-"""
+﻿"""
 抓取节点 — URL -> 正文纯文本
 
 约束：
 - 异常不抛，写结构化错误字段让 router 早退
 - 不调 LLM
 - requests+readability 为主，Playwright 兜底
+- 非 HTML 内容通过适配器提取（PDF/纯文本等）
 """
 
 from __future__ import annotations
@@ -15,11 +16,46 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _try_adapters(url: str, content_type: str, response) -> tuple[Optional[str], Optional[str]]:
+    """
+    遍历适配器尝试提取文本（PDF/纯文本等非 HTML 内容）。
+
+    Returns:
+        (report_text, error) — 成功时 error 为 None
+    """
+    try:
+        from ..adapters import get_adapters
+    except ImportError:
+        return None, "适配器模块不可用"
+
+    for adapter in get_adapters():
+        if adapter.can_handle(content_type, url):
+            logger.info("[adapter] 尝试 %s 处理 %s", type(adapter).__name__, url)
+            try:
+                text = adapter.extract(url, response)
+                if text and len(text.strip()) >= 200:
+                    logger.info("[adapter] %s 成功: %d 字", type(adapter).__name__, len(text))
+                    return text, None
+                if text and len(text.strip()) > 0:
+                    logger.warning("[adapter] %s 提取文本过短：%d 字", type(adapter).__name__, len(text))
+                    return text, None
+                logger.warning("[adapter] %s 返回空文本（可能是扫描版 PDF）", type(adapter).__name__)
+                return None, f"{type(adapter).__name__} 返回空文本（可能是扫描版）"
+            except Exception as e:
+                logger.warning("[adapter] %s 失败: %s", type(adapter).__name__, e)
+                continue
+
+    return None, None  # 无适配器匹配
+
+
 def fetch_report_text(url: str, timeout: int = 15) -> tuple[Optional[str], Optional[str]]:
     """
     抓取报告正文。
 
-    策略：requests + readability-lxml 为主，Playwright 兜底。
+    策略：
+    1. requests + readability-lxml 处理 HTML
+    2. 非 HTML 内容通过适配器（PDF/纯文本等）提取
+    3. Playwright 兜底
 
     Args:
         url: 报告 URL
@@ -49,7 +85,13 @@ def fetch_report_text(url: str, timeout: int = 15) -> tuple[Optional[str], Optio
         # 检查是否为 HTML 内容
         content_type = resp.headers.get("Content-Type", "")
         if "text/html" not in content_type and "application/xhtml" not in content_type:
-            # 非 HTML 直接返回文本
+            # 非 HTML → 先尝试适配器（PDF/纯文本等）
+            adapter_text, adapter_error = _try_adapters(url, content_type, resp)
+            if adapter_text is not None:
+                return adapter_text, None
+            if adapter_error is not None:
+                return None, adapter_error
+            # 适配器不匹配，回退到直接读响应文本
             text = resp.text.strip()
             if len(text) >= 200:
                 return text, None

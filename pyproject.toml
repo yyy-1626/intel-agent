@@ -41,6 +41,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pdf = ["pdfplumber>=0.11"]
 playwright = ["playwright>=1.40"]
 dev = [
     "pytest>=8.0",
