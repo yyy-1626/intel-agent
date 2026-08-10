@@ -1,128 +1,178 @@
 """
-IOC 正则提取 — 8 类正则模式从文本中召回 IOC 候选
+IOC 正则工具 — 规则在 config/ioc_regex.yaml，本文件只做加载/匹配逻辑
 
-约束：只召回不判级。返回 [(value, candidate_type), ...]。
-正则管格式，LLM 管语义判级。
+两个职责：
+1. 召回（格式召回，不判级）：extract_* 系列从文本中提取 IOC 候选
+2. 判定：classify_ioc_value 判断单个值属于 7 类 IOC（IP/Domain/Email/URL/Hash/CVE/TTP）中的哪一类，
+   供 ioc_filter 节点过滤 LLM 误抓的非 IOC
 """
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import List, Tuple
+from pathlib import Path
 
-# ============================================================
-# 8 类 IOC 正则模式
-# ============================================================
+import yaml
 
-# 1. IPv4 地址
-IPV4_PATTERN = re.compile(
-    r'\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}'
-    r'(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b'
-)
+logger = logging.getLogger(__name__)
 
-# 2. IPv6 地址（完整格式）
-IPV6_PATTERN = re.compile(
-    r'\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|'
-    r'\b(?:[0-9a-fA-F]{1,4}:){1,7}:\b|'
-    r'\b::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}\b'
-)
+# 默认配置文件路径
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config" / "ioc_regex.yaml"
 
-# 3. 域名（含子域名，排除纯 IP）
-DOMAIN_PATTERN = re.compile(
-    r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+'
-    r'[a-zA-Z]{2,}(?:\.[a-zA-Z]{2,})?\b'
-)
+# 7 类规范 IOC 类型（与 schemas.IOCTypeEnum 一致）
+IOC_TYPES = ("IP", "Domain", "Email", "URL", "Hash", "CVE", "TTP")
 
-# 4. URL（http/https/ftp）
-URL_PATTERN = re.compile(
-    r'\b(?:https?|ftp)://'
-    r'[a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)*'
-    r'(?::\d{1,5})?'
-    r'(?:/[^\s\[\]\(\)\{\}"\'<>]*)?'
-    r'\b'
-)
-
-# 5. 哈希值
-HASH_MD5_PATTERN = re.compile(r'\b[a-fA-F0-9]{32}\b')
-HASH_SHA1_PATTERN = re.compile(r'\b[a-fA-F0-9]{40}\b')
-HASH_SHA256_PATTERN = re.compile(r'\b[a-fA-F0-9]{64}\b')
-
-# 6. 文件路径（Windows 和 Unix 风格）
-FILE_PATH_PATTERN = re.compile(
-    r'(?:[A-Za-z]:\\[\w\s\-\.\\]+|'
-    r'/(?:[\w\-\.]+/)*[\w\-\.]+|'
-    r'%[A-Za-z]+%\\[\w\s\-\.\\]+|'
-    r'\\\\[\w\-\.]+\\[\w\s\-\.\\]+)'
-)
-
-# 7. 注册表项
-REGISTRY_PATTERN = re.compile(
-    r'\b(?:HK(?:LM|CU|CR|U|CC|PD|DD|EY)\\)[^\s\[\]\(\)\{\}"\'<>]*\b|'
-    r'\bHKEY_[A-Z_]+\\[^\s\[\]\(\)\{\}"\'<>]*\b'
-)
-
-# 8. 邮箱地址
-EMAIL_PATTERN = re.compile(
-    r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'
-)
+# 需要词边界包裹的类别：避免把长字符串内部的子串误召回（如 64 位 hex 中误匹配 32 位）
+_WORD_BOUNDED_CATEGORIES = {"IP", "Domain", "Email", "Hash", "CVE", "TTP"}
 
 
-# ============================================================
-# 提取函数
-# ============================================================
+class IOCRegexConfig:
+    """IOC 正则配置：加载 config/ioc_regex.yaml 并编译规则"""
 
-def extract_ipv4(text: str) -> List[Tuple[str, str]]:
-    """提取 IPv4 地址"""
-    return [(m.group(), "IPv4") for m in IPV4_PATTERN.finditer(text)]
+    def __init__(self, config_path: Path | None = None):
+        self._config_path = config_path or DEFAULT_CONFIG_PATH
+        self._extract_regexes: list[dict] = []          # [{label, category, regex}]
+        self._verification: dict[str, list[re.Pattern]] = {}  # category -> [fullmatch patterns]
+        self._load_config()
+
+    def _load_config(self) -> None:
+        if not self._config_path.exists():
+            logger.error("ioc_regex.yaml 不存在: %s，规则为空", self._config_path)
+            return
+
+        with open(self._config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        for entry in config.get("patterns", []):
+            label = entry.get("name", "")
+            category = entry.get("category", "")
+            pattern = entry.get("pattern", "")
+            if not label or not pattern:
+                continue
+
+            if category in _WORD_BOUNDED_CATEGORIES:
+                regex = re.compile(rf'(?<!\w)(?:{pattern})(?!\w)', re.IGNORECASE)
+            else:
+                regex = re.compile(pattern, re.IGNORECASE)
+
+            self._extract_regexes.append({
+                "label": label,
+                "category": category,
+                "regex": regex,
+            })
+
+            if category in IOC_TYPES:
+                # 类型判定用原 pattern 做整体匹配（fullmatch），边界已由调用方保证
+                self._verification.setdefault(category, []).append(
+                    re.compile(pattern, re.IGNORECASE)
+                )
+
+        logger.info(
+            "加载 ioc_regex.yaml: %d 条规则, %d 类",
+            len(self._extract_regexes),
+            len(self._verification),
+        )
+
+    def extract_labels(self) -> list[dict]:
+        """返回 [{label, category, regex}] 全部召回规则"""
+        return self._extract_regexes
+
+    def classify(self, value: str) -> str | None:
+        """判断单个 IOC 值属于 7 类中的哪一类，不属于返回 None"""
+        v = value.strip()
+        if not v:
+            return None
+        for category, patterns in self._verification.items():
+            for pat in patterns:
+                if pat.fullmatch(v):
+                    return category
+        return None
 
 
-def extract_ipv6(text: str) -> List[Tuple[str, str]]:
-    """提取 IPv6 地址"""
-    return [(m.group(), "IPv6") for m in IPV6_PATTERN.finditer(text)]
+# 全局单例
+_regex_config: IOCRegexConfig | None = None
 
 
-def extract_domain(text: str) -> List[Tuple[str, str]]:
-    """提取域名"""
-    return [(m.group().rstrip('.'), "Domain") for m in DOMAIN_PATTERN.finditer(text)]
+def get_regex_config(config_path: Path | None = None) -> IOCRegexConfig:
+    """获取 IOC 正则配置单例"""
+    global _regex_config
+    if _regex_config is None:
+        _regex_config = IOCRegexConfig(config_path)
+    return _regex_config
 
 
-def extract_url(text: str) -> List[Tuple[str, str]]:
-    """提取 URL"""
-    return [(m.group(), "URL") for m in URL_PATTERN.finditer(text)]
-
-
-def extract_hash(text: str) -> List[Tuple[str, str]]:
-    """提取各类哈希值（MD5/SHA1/SHA256）"""
-    results: List[Tuple[str, str]] = []
-    for m in HASH_MD5_PATTERN.finditer(text):
-        results.append((m.group(), "MD5"))
-    for m in HASH_SHA1_PATTERN.finditer(text):
-        results.append((m.group(), "SHA1"))
-    for m in HASH_SHA256_PATTERN.finditer(text):
-        results.append((m.group(), "SHA256"))
+def _extract_by_label(label: str, text: str) -> list[tuple[str, str]]:
+    """按标签提取，返回 [(value, label), ...]"""
+    results: list[tuple[str, str]] = []
+    for entry in get_regex_config().extract_labels():
+        if entry["label"] == label:
+            for m in entry["regex"].finditer(text):
+                results.append((m.group(), label))
     return results
 
 
-def extract_file_path(text: str) -> List[Tuple[str, str]]:
+def classify_ioc_value(value: str) -> str | None:
+    """
+    判断单个 IOC 值属于 7 类（IP/Domain/Email/URL/Hash/CVE/TTP）中的哪一类。
+
+    Args:
+        value: IOC 值，如 '192.168.1.1' / 'evil.com' / 'a.exe'
+
+    Returns:
+        规范类型名（'IP'/'Domain'/...），不属于 7 类返回 None
+    """
+    return get_regex_config().classify(value)
+
+
+# ============================================================
+# 召回函数（格式召回，不判级）
+# ============================================================
+
+def extract_ipv4(text: str) -> list[tuple[str, str]]:
+    """提取 IPv4 地址"""
+    return _extract_by_label("IPv4", text)
+
+
+def extract_ipv6(text: str) -> list[tuple[str, str]]:
+    """提取 IPv6 地址"""
+    return _extract_by_label("IPv6", text)
+
+
+def extract_domain(text: str) -> list[tuple[str, str]]:
+    """提取域名"""
+    return _extract_by_label("Domain", text)
+
+
+def extract_url(text: str) -> list[tuple[str, str]]:
+    """提取 URL"""
+    return _extract_by_label("URL", text)
+
+
+def extract_hash(text: str) -> list[tuple[str, str]]:
+    """提取各类哈希值（MD5/SHA1/SHA256）"""
+    results: list[tuple[str, str]] = []
+    for label in ("MD5", "SHA1", "SHA256"):
+        results.extend(_extract_by_label(label, text))
+    return results
+
+
+def extract_file_path(text: str) -> list[tuple[str, str]]:
     """提取文件路径"""
-    return [(m.group(), "FilePath") for m in FILE_PATH_PATTERN.finditer(text)]
+    return _extract_by_label("FilePath", text)
 
 
-def extract_registry(text: str) -> List[Tuple[str, str]]:
+def extract_registry(text: str) -> list[tuple[str, str]]:
     """提取注册表项"""
-    return [(m.group(), "Registry") for m in REGISTRY_PATTERN.finditer(text)]
+    return _extract_by_label("Registry", text)
 
 
-def extract_email(text: str) -> List[Tuple[str, str]]:
+def extract_email(text: str) -> list[tuple[str, str]]:
     """提取邮箱地址"""
-    return [(m.group(), "Email") for m in EMAIL_PATTERN.finditer(text)]
+    return _extract_by_label("Email", text)
 
 
-# ============================================================
-# 统一入口
-# ============================================================
-
-def extract_all_ioc_candidates(text: str) -> List[Tuple[str, str]]:
+def extract_all_ioc_candidates(text: str) -> list[tuple[str, str]]:
     """
     从文本中召回所有 IOC 候选。
 
@@ -130,26 +180,16 @@ def extract_all_ioc_candidates(text: str) -> List[Tuple[str, str]]:
         text: 报告正文（纯文本）
 
     Returns:
-        [(value, candidate_type), ...] 列表，按原文出现顺序排序
-        其中 candidate_type ∈ {IPv4, IPv6, Domain, URL, MD5, SHA1, SHA256, FilePath, Registry, Email}
+        [(value, candidate_type), ...] 按配置顺序 + 原文出现顺序，已去重
     """
-    all_candidates: List[Tuple[str, str]] = []
-    # 按类型依次提取，保留位置信息用于排序
-    for extractor in [
-        extract_ipv4,
-        extract_ipv6,
-        extract_domain,
-        extract_url,
-        extract_hash,
-        extract_file_path,
-        extract_registry,
-        extract_email,
-    ]:
-        all_candidates.extend(extractor(text))
+    all_candidates: list[tuple[str, str]] = []
+    for entry in get_regex_config().extract_labels():
+        for m in entry["regex"].finditer(text):
+            all_candidates.append((m.group(), entry["label"]))
 
     # 按值去重，保持首次出现顺序
     seen: set = set()
-    deduped: List[Tuple[str, str]] = []
+    deduped: list[tuple[str, str]] = []
     for val, typ in all_candidates:
         key = (val.strip().lower(), typ)
         if key not in seen:

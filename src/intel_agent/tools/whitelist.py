@@ -1,15 +1,17 @@
 """
-IOC 白名单过滤 — 前置过滤明确良性资产
+IOC 白名单过滤 — 前置过滤明确良性资产（云/CDN/安全厂商/公共 DNS/私有 IP）
 
-约束：在 LLM 判级之前过滤，降误报 + 省 token。
+约束：在 LLM 判级/输出之前过滤，降误报 + 省 token。
 支持 YAML 配置（config/whitelist.yaml），可自定义。
+参考前项目 IOC-Detector：URL 取 hostname、Email 取域名、IP 覆盖公共 DNS/云 CDN CIDR 与 IPv6。
 """
 
 from __future__ import annotations
 
 import ipaddress
+from contextlib import suppress
 from pathlib import Path
-from typing import List, Tuple
+from urllib.parse import urlparse
 
 import yaml
 
@@ -18,7 +20,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config" / "w
 
 
 class WhitelistFilter:
-    """白名单过滤器：滤掉云厂商/CDN/安全厂商域名与私有 IP 段"""
+    """白名单过滤器：滤掉云厂商/CDN/安全厂商域名与私有/公共 IP 段"""
 
     def __init__(self, config_path: Path | None = None):
         """
@@ -26,7 +28,7 @@ class WhitelistFilter:
             config_path: whitelist.yaml 路径，默认 config/whitelist.yaml
         """
         self._config_path = config_path or DEFAULT_CONFIG_PATH
-        self._private_networks: list[ipaddress.IPv4Network] = []
+        self._networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
         self._domain_suffixes: set[str] = set()
         self._exact_values: set[str] = set()
         self._load_config()
@@ -39,12 +41,10 @@ class WhitelistFilter:
         with open(self._config_path, encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
 
-        # 私有 IP 段
-        for cidr in config.get("private_ip_ranges", []):
-            try:
-                self._private_networks.append(ipaddress.IPv4Network(cidr, strict=False))
-            except ValueError:
-                pass
+        # IP 段（私有段 + 公共 DNS/云服务商段，合并检查）
+        for cidr in config.get("private_ip_ranges", []) + config.get("public_ip_ranges", []):
+            with suppress(ValueError):
+                self._networks.append(ipaddress.ip_network(cidr, strict=False))
 
         # 域名后缀（合并 CDN/云/安全厂商/公共服务/示例域名）
         for section in [
@@ -54,16 +54,64 @@ class WhitelistFilter:
             "example_domains",
         ]:
             for domain in config.get(section, []):
-                self._domain_suffixes.add(domain.lower().strip())
+                self._domain_suffixes.add(domain.lower().strip().rstrip("."))
 
         # 精确值（如公共 DNS IP）
         for domain in config.get("public_service_domains", []):
-            # 尝试解析为 IP
             try:
-                ipaddress.IPv4Address(domain)
+                ipaddress.ip_address(domain.strip())
                 self._exact_values.add(domain.strip())
-            except (ipaddress.AddressValueError, ValueError):
+            except ValueError:
                 pass
+
+    @staticmethod
+    def _normalize_kind(candidate_type: str) -> str:
+        """把候选类型归一到 7 类规范类型（IP/Domain/URL/Email），其余原样返回"""
+        t = (candidate_type or "").strip()
+        if t in ("IP", "IPv4", "IPv6", "ip", "ipv4", "ipv6"):
+            return "IP"
+        if t in ("Domain", "domain"):
+            return "Domain"
+        if t in ("URL", "url"):
+            return "URL"
+        if t in ("Email", "email"):
+            return "Email"
+        return t
+
+    @staticmethod
+    def _hostname(value: str, kind: str) -> str | None:
+        """从 value 中取出待匹配的主机名/域名"""
+        if kind == "URL":
+            host = urlparse(value).hostname
+            return host.lower() if host else None
+        if kind == "Email":
+            return value.rsplit("@", 1)[-1].strip().lower() if "@" in value else None
+        return value.strip().lower().rstrip(".")
+
+    def _is_safe_host(self, host: str) -> bool:
+        """域名/主机名是否命中白名单后缀（含子域名匹配）"""
+        return host in self._domain_suffixes or any(
+            host.endswith("." + suffix) for suffix in self._domain_suffixes
+        )
+
+    def _is_safe_ip(self, ip_str: str) -> bool:
+        """IP 是否属于私有/保留段或白名单 IP 段"""
+        try:
+            ip = ipaddress.ip_address(ip_str.strip())
+        except ValueError:
+            return False
+        if (
+            ip.is_private or ip.is_loopback or ip.is_multicast
+            or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+        ):
+            return True
+        for net in self._networks:
+            try:
+                if ip in net:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     def is_whitelisted(self, value: str, candidate_type: str) -> bool:
         """
@@ -71,39 +119,41 @@ class WhitelistFilter:
 
         Args:
             value: IOC 值
-            candidate_type: 候选类型（Domain/IPv4 等）
+            candidate_type: 候选类型（IP/Domain/URL/Email 或 IPv4/IPv6 等）
 
         Returns:
             True 表示应过滤掉
         """
-        value_lower = value.strip().lower()
-
-        # 精确匹配
-        if value_lower in self._exact_values:
+        if not value or not value.strip():
             return True
 
-        # IP 类：检查是否在私有/保留 IP 段
-        if candidate_type in ("IPv4", "IPv6"):
-            try:
-                ip = ipaddress.IPv4Address(value.strip())
-                for network in self._private_networks:
-                    if ip in network:
-                        return True
-            except (ValueError, ipaddress.AddressValueError):
-                pass
+        kind = self._normalize_kind(candidate_type)
+        raw = value.strip()
+
+        # 精确匹配（公共 DNS 等精确 IP）
+        if raw.strip().lower() in self._exact_values:
+            return True
+
+        # 白名单只对网络类 IOC 生效（Hash/CVE/TTP 无域名/IP 概念，直接放行）
+        if kind not in ("IP", "Domain", "URL", "Email"):
             return False
 
-        # 域名类：检查后缀匹配
-        if candidate_type in ("Domain", "URL"):
-            for suffix in self._domain_suffixes:
-                if value_lower == suffix or value_lower.endswith("." + suffix):
-                    return True
+        if kind == "IP":
+            return self._is_safe_ip(raw)
 
-        return False
+        host = self._hostname(raw, kind)
+        if not host:
+            return False
+
+        # 主机名本身是 IP（如 URL 指向内网 IP）
+        if kind in ("Domain", "URL", "Email") and self._is_safe_ip(host):
+            return True
+
+        return self._is_safe_host(host)
 
     def filter_candidates(
-        self, candidates: List[Tuple[str, str]]
-    ) -> List[Tuple[str, str]]:
+        self, candidates: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
         """
         过滤 IOC 候选列表。
 
@@ -121,7 +171,7 @@ class WhitelistFilter:
 
     def reload(self) -> None:
         """重新加载白名单配置"""
-        self._private_networks.clear()
+        self._networks.clear()
         self._domain_suffixes.clear()
         self._exact_values.clear()
         self._load_config()
@@ -140,9 +190,9 @@ def get_whitelist(config_path: Path | None = None) -> WhitelistFilter:
 
 
 def filter_ioc_candidates(
-    candidates: List[Tuple[str, str]],
+    candidates: list[tuple[str, str]],
     config_path: Path | None = None,
-) -> List[Tuple[str, str]]:
+) -> list[tuple[str, str]]:
     """
     过滤 IOC 候选（便捷函数）。
 

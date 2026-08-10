@@ -1,0 +1,62 @@
+# IOC 正则规则配置（7 类 IOC：IP / Domain / Email / URL / Hash / CVE / TTP）
+# ioc_regex.py 只负责加载与匹配逻辑，规则内容全部在此维护，改规则不用改代码。
+#
+# 字段说明：
+#   name     : 规则的提取标签（如 IPv4 / MD5 / FilePath），extract_* 系列函数返回此标签
+#   category : 所属的 7 类规范类型（IP/Domain/Email/URL/Hash/CVE/TTP），与 schemas.IOCTypeEnum 一致。
+#              留空表示仅用于召回、不参与 7 类类型判定（如 FilePath / Registry）。
+#   pattern  : Python re 语法，编译时加 re.IGNORECASE。不写 \b 边界，边界由 ioc_regex.py 处理。
+version: 1
+
+patterns:
+  # ---- IP ----
+  - name: IPv4
+    category: IP
+    pattern: '(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)'
+  - name: IPv6
+    category: IP
+    pattern: '(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,7}:|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:(?:(?::[0-9a-fA-F]{1,4}){1,6})|:(?:(?::[0-9a-fA-F]{1,4}){1,7}|:)'
+
+  # ---- Domain（限知名后缀，避免把 a.exe / malware.dll 这类文件名误判为域名） ----
+  - name: Domain
+    category: Domain
+    pattern: '(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+(?:com|cn|net|org|edu|gov|mil|int|info|io|co|cc|top|xyz|club|shop|online|site|vip|tech|store|me|tv|biz|pro|name|dev|app|ai|link|win|bid|icu|space|fun|art|cloud|live|work|wang|click|host|moe|blog|fyi|guru|life|media|news|one|pub|red|social|tools|zone|ren|uk|de|jp|fr|ru|br|au|ca|in|it|es|nl|se|no|fi|pl|ch|at|be|dk|hk|tw|sg|kr|mx|za|nz|tr|eu|us|vc|gg|je|im|sh|ac)'
+
+  # ---- URL（http/https/ftp，含端口与路径） ----
+  - name: URL
+    category: URL
+    pattern: '(?:https?|ftp)://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?::\d{1,5})?(?:/[^\s\[\]\(\)\{\}"<>]*)?'
+
+  # ---- Email ----
+  - name: Email
+    category: Email
+    pattern: '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'
+
+  # ---- Hash ----
+  - name: MD5
+    category: Hash
+    pattern: '[a-fA-F0-9]{32}'
+  - name: SHA1
+    category: Hash
+    pattern: '[a-fA-F0-9]{40}'
+  - name: SHA256
+    category: Hash
+    pattern: '[a-fA-F0-9]{64}'
+
+  # ---- CVE ----
+  - name: CVE
+    category: CVE
+    pattern: 'CVE-\d{4}-\d{4,7}'
+
+  # ---- TTP（ATT&CK 技术编号，如 T1566 / T1566.001） ----
+  - name: TTP
+    category: TTP
+    pattern: 'T\d{4}(?:\.\d{1,3})?'
+
+  # ---- 召回用（不参与 7 类类型判定） ----
+  - name: FilePath
+    category: ''
+    pattern: '(?:[a-zA-Z]:\\[^\s:;*?"<>|“”]+|/(?:[a-zA-Z0-9_\-\.]+/)+[a-zA-Z0-9_\-\.]+|\\\\[a-zA-Z0-9_\-\.]+\\[a-zA-Z0-9_\-\.\\]+)'
+  - name: Registry
+    category: ''
+    pattern: '(?:HKEY_[A-Z_]+|HK(?:LM|CU|CR|U|CC|PD|DD|EY))\\[a-zA-Z0-9_\\]+'

@@ -1,5 +1,5 @@
 # IOC 白名单配置
-# 前置过滤：在 LLM 判级之前过滤明确良性资产，降低误报，节省 LLM 调用
+# 前置过滤：在 LLM 判级/输出之前过滤明确良性资产，降低误报，节省 LLM 调用
 version: 1
 
 # 私有 / 保留 IP 段（CIDR 格式）
@@ -10,6 +10,26 @@ private_ip_ranges:
   - 127.0.0.0/8
   - 169.254.0.0/16
   - 224.0.0.0/4
+
+# 公共 DNS / 知名云服务商 IP 段（CIDR 格式）
+# 与 private_ip_ranges 一起参与 IP 白名单判定，命中即视为良性资产
+public_ip_ranges:
+  - 8.8.8.0/24
+  - 8.8.4.0/24
+  - 1.1.1.0/24
+  - 1.0.0.0/24
+  - 208.67.222.0/24
+  - 208.67.220.0/24
+  - 9.9.9.0/24
+  # 部分 AWS 区域
+  - 52.0.0.0/8
+  - 54.0.0.0/8
+  # 部分 Azure
+  - 13.0.0.0/8
+  - 20.0.0.0/8
+  # 部分 GCP
+  - 34.0.0.0/8
+  - 35.0.0.0/8
 
 # 知名云服务商 / CDN 域名（子域名匹配）
 cdn_and_cloud_domains:
@@ -29,7 +49,6 @@ cdn_and_cloud_domains:
   - github.io
   - githubusercontent.com
   - jsdelivr.net
-  - cdn.jsdelivr.net
   - unpkg.com
   - vercel.app
   - netlify.app
@@ -38,6 +57,31 @@ cdn_and_cloud_domains:
   - workers.dev
   - pages.dev
   - r2.dev
+  - amazon.com
+  - aws.amazon.com
+  - azure.com
+  - office365.com
+  - aliyuncs.com
+  - alibaba.com
+  - aliyun.com
+  - huaweicloud.com
+  - tencentcloud.com
+  - qcloud.com
+  - bcebos.com
+  - myqcloud.com
+  - cloud.tencent.com
+  - docker.com
+  - docker.io
+  - npmjs.com
+  - pypi.org
+  - python.org
+  - nodejs.org
+  - nginx.org
+  - apache.org
+  - mysql.com
+  - postgresql.org
+  - redis.io
+  - elastic.co
 
 # 安全厂商 / 知名分析平台域名
 security_vendor_domains:
@@ -51,9 +95,7 @@ security_vendor_domains:
   - hybrid-analysis.com
   - joesandbox.com
   - any.run
-  - app.any.run
   - intezer.com
-  - analyze.intezer.com
   - virusscan.jotti.org
   - talosintelligence.com
   - blog.talosintelligence.com
@@ -65,15 +107,77 @@ security_vendor_domains:
   - support.microsoft.com
   - google.com
   - github.com
+  - gitlab.com
+  - bitbucket.org
   - twitter.com
   - x.com
   - facebook.com
+  - fbcdn.net
   - linkedin.com
   - reddit.com
   - medium.com
   - wikipedia.org
   - archive.org
   - web.archive.org
+  - nsfocus.com
+  - venustech.com.cn
+  - dbappsecurity.com.cn
+  - qianxin.com
+  - 360.cn
+  - 360.com
+  - tencent.com
+  - qq.com
+  - baidu.com
+  - baiducontent.com
+  - huawei.com
+  - 163.com
+  - 126.com
+  - sina.com.cn
+  - sohu.com
+  - cnnvd.org.cn
+  - cnvd.org.cn
+  - nvd.nist.gov
+  - cve.mitre.org
+  - ibm.com
+  - oracle.com
+  - cisco.com
+  - sophos.com
+  - mcafee.com
+  - symantec.com
+  - trendmicro.com
+  - kaspersky.com
+  - eset.com
+  - paloaltonetworks.com
+  - unit42.paloaltonetworks.com
+  - checkpoint.com
+  - fortinet.com
+  - broadcom.com
+  - qualys.com
+  - crowdstrike.com
+  - blog.crowdstrike.com
+  - mandiant.com
+  - fireeye.com
+  - proofpoint.com
+  - blog.proofpoint.com
+  - sonicwall.com
+  - blog.sonicwall.com
+  - welivesecurity.com
+  - threatpost.com
+  - bleepingcomputer.com
+  - securityweek.com
+  - darkreading.com
+  - infosecurity-magazine.com
+  - thehackernews.com
+  - mp.weixin.qq.com
+  - weixin.qq.com
+  - wechat.com
+  - myexternalip.com
+  - apple.com
+  - icloud.com
+  - linux.org
+  - debian.org
+  - ubuntu.com
+  - fedoraproject.org
 
 # 知名公共 DNS / 邮件服务商
 public_service_domains:
