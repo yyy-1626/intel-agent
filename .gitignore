@@ -8,40 +8,33 @@ build/
 *.egg
 .eggs/
 *.whl
-
 # Virtual environments
 .venv/
 venv/
 env/
 .env
-
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 *.cover
-
 # Project specific
 application.yaml
-checkpoints.db
+checkpoints.db*
 /output/
 *.log
-
 # OS
 .DS_Store
 Thumbs.db
 desktop.ini
-
 # Jupyter
 .ipynb_checkpoints/
-
 # Environment
 .env
 .env.local
