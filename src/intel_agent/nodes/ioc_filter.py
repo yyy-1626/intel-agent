@@ -19,9 +19,41 @@ from ..tools.whitelist import get_whitelist
 logger = logging.getLogger(__name__)
 
 
+import re
+
+# 威胁报告中常见的 defang（反自动化抓取）写法 → 全局替换，在 strip 之前执行
+_DEFANG_REPLACEMENTS: list[tuple[str, str]] = [
+    # 协议 defang：hxxp/hxxps → http/https
+    (r'\bhxxp(?=s?://)', 'http'),
+    # 点号 defang：[.] (.) {.} → .
+    (r'\[\.\]', '.'),
+    (r'\(\.\)', '.'),
+    (r'\{\.\}', '.'),
+    # 冒号 defang：[:] (:) → :
+    (r'\[:\]', ':'),
+    (r'\(:\)', ':'),
+    # @ 符号 defang：[at] [@] (at) → @
+    (r'\[at\]', '@'),
+    (r'\[@\]', '@'),
+    (r'\(at\)', '@'),
+    # 协议分隔符 defang：[://] → ://
+    (r'\[://\]', '://'),
+]
+
+# 预编译 defang 正则
+_DEFANG_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(p, re.IGNORECASE), r) for p, r in _DEFANG_REPLACEMENTS
+]
+
+
 def _normalize_value(value: str) -> str:
-    """去掉常见包裹/尾部标点，返回干净的值"""
+    """去掉常见包裹/尾部标点与 defang 写法，返回干净的值"""
     v = (value or "").strip()
+
+    # 0. 全局 defang 替换（在 strip 之前，因为替换后可能产生新的首尾字符）
+    for pattern, replacement in _DEFANG_PATTERNS:
+        v = pattern.sub(replacement, v)
+
     v = v.strip("\"'“”‘’[]()<>")
     # 不剥冒号：IPv6 压缩形式可能以 "::" 结尾（如 2001:db8::）
     v = v.rstrip(".,;!?")
