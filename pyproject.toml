@@ -42,6 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf = ["pdfplumber>=0.11"]
+youtube = ["yt-dlp>=2024"]
 playwright = ["playwright>=1.40"]
 dev = [
     "pytest>=8.0",
