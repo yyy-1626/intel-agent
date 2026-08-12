@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .base import ContentAdapter
 from .youtube_adapter import YouTubeAdapter
+from .office_adapter import OfficeAdapter
 from .pdf_adapter import PDFAdapter
 from .text_adapter import TextAdapter
 
@@ -16,7 +17,8 @@ def _init_adapters() -> list[ContentAdapter]:
         return _ADAPTERS
 
     _ADAPTERS.extend([
-        YouTubeAdapter(),   # URL 匹配优先
+        YouTubeAdapter(),
+        OfficeAdapter(),
         PDFAdapter(),
         TextAdapter(),
     ])
