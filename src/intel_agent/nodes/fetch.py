@@ -7,14 +7,62 @@
 - requests+readability 为主，Playwright 兜底
 - 非 HTML 内容通过适配器提取（PDF/纯文本等）
 - URL 型适配器（YouTube）在 HTML 之前优先判断
+- 本地文件路径直接读取
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _is_local_path(url: str) -> bool:
+    """判断是否为本地文件路径。"""
+    path = Path(url)
+    return path.exists() and path.is_file()
+
+
+def _fetch_local_file(url: str) -> Optional[str]:
+    """读取本地文件，通过适配器提取文本。"""
+    path = Path(url)
+
+    # 构造一个假的 requests.Response 给适配器
+    class _FakeResponse:
+        def __init__(self, content, content_type): self.content = content; self.headers = {"Content-Type": content_type}
+    import mimetypes
+    mime, _ = mimetypes.guess_type(str(path))
+    mime = mime or "application/octet-stream"
+    data = path.read_bytes()
+    fake_resp = _FakeResponse(data, mime)
+
+    try:
+        from ..adapters import get_adapters
+    except ImportError:
+        return None
+
+    for adapter in get_adapters():
+        if adapter.can_handle(mime, url):
+            logger.info("[local] 尝试 %s 处理 %s", type(adapter).__name__, path.name)
+            try:
+                text = adapter.extract(url, fake_resp)
+                if text and len(text.strip()) >= 200:
+                    logger.info("[local] %s 成功: %d 字", type(adapter).__name__, len(text))
+                    return text
+            except Exception as e:
+                logger.warning("[local] %s 失败: %s", type(adapter).__name__, e)
+
+    # 兜底：直接读文本
+    try:
+        text = data.decode("utf-8")
+        if len(text.strip()) >= 200:
+            return text
+    except UnicodeDecodeError:
+        pass
+
+    return None
 
 
 def _try_url_adapters(url: str) -> Optional[str]:
@@ -53,9 +101,7 @@ def _try_adapters(url: str, content_type: str, response) -> tuple[Optional[str],
                     logger.info("[adapter] %s 成功: %d 字", type(adapter).__name__, len(text))
                     return text, None
                 if text and len(text.strip()) > 0:
-                    logger.warning("[adapter] %s 文本过短：%d 字", type(adapter).__name__, len(text))
                     return text, None
-                logger.warning("[adapter] %s 返回空文本", type(adapter).__name__)
                 return None, f"{type(adapter).__name__} 返回空文本"
             except Exception as e:
                 logger.warning("[adapter] %s 失败: %s", type(adapter).__name__, e)
@@ -66,7 +112,8 @@ def _try_adapters(url: str, content_type: str, response) -> tuple[Optional[str],
 
 def fetch_report_text(url: str, timeout: int = 15) -> tuple[Optional[str], Optional[str]]:
     """抓取报告正文。策略：
-    1. URL 型适配器优先（YouTube 等，不依赖 Content-Type）
+    0. 本地文件路径直接读取
+    1. URL 型适配器优先（YouTube 等）
     2. requests + readability-lxml 处理 HTML
     3. 非 HTML 内容通过 Content-Type 适配器（PDF 等）
     4. Playwright 兜底
@@ -74,7 +121,14 @@ def fetch_report_text(url: str, timeout: int = 15) -> tuple[Optional[str], Optio
     import requests
     from bs4 import BeautifulSoup
 
-    # ---- 0. URL 型适配器优先 ----
+    # ---- 0. 本地文件路径 ----
+    if _is_local_path(url):
+        text = _fetch_local_file(url)
+        if text:
+            return text, None
+        return None, "本地文件读取失败"
+
+    # ---- 0.1 URL 型适配器 ----
     url_text = _try_url_adapters(url)
     if url_text:
         return url_text, None
